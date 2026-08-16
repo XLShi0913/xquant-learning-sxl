@@ -18,7 +18,7 @@ PACKAGES = [
     ("akshare", "akshare", "uv pip install akshare==1.18.*"),
     ("yfinance", "yfinance", "uv pip install yfinance==1.2.*"),
     ("oxq", "open-xquant",
-     'uv pip install "open-xquant @ git+https://github.com/xingwudao/open-xquant.git@v0.1.0"'),
+     'uv pip install "open-xquant @ git+https://github.com/xingwudao/open-xquant.git@6af7fa77f143e2f5dfc9d96464f9f60b66b4c60a"'),
 ]
 
 ACTIVATE_HINT = (
