@@ -1,2 +1,6 @@
 .idea
 .venv
+__pycache__/
+q1/data/
+q2/data/
+q2/figures/
