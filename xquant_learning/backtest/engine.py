@@ -21,11 +21,16 @@ class Engine:
     broker: SimBroker
     strategy: Strategy
     annual_trading_days: int = 252
+    signal_timing: str = "previous_close"
     daily_order_results: dict[pd.Timestamp, list[OrderResult]] = field(
         init=False, default_factory=dict
     )
 
     def __post_init__(self) -> None:
+        if self.signal_timing not in {"previous_close", "same_close"}:
+            raise ValueError("signal_timing must be previous_close or same_close")
+        if self.signal_timing == "same_close" and self.broker.execution_price != "close":
+            raise ValueError("same_close signals require close execution")
         if (
             isinstance(self.annual_trading_days, bool)
             or not isinstance(self.annual_trading_days, int)
@@ -43,7 +48,8 @@ class Engine:
         self.daily_order_results = {}
 
         for date in self.broker.trading_dates:
-            market = self.broker.history_before(date)
+            market = (self.broker.history_through(date) if self.signal_timing == "same_close"
+                      else self.broker.history_before(date))
             orders = list(self.strategy.generate_orders(self.account.view(), market, date))
             self.daily_order_results[date] = self.broker.execute_orders(
                 self.account, orders, date
@@ -112,6 +118,12 @@ class Engine:
             },
             name="value",
         )
+
+    def simplified_sharpe(self) -> float:
+        """Annualized arithmetic daily mean / sample std; risk-free rate is zero."""
+        returns = self.daily_returns()
+        sigma = returns.std(ddof=1)
+        return float(returns.mean() / sigma * np.sqrt(self.annual_trading_days)) if sigma > 0 else float("nan")
 
     def _portfolio_values(self) -> pd.Series:
         if not self.account.history:

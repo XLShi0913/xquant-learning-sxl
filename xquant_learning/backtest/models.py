@@ -39,7 +39,7 @@ class Order:
 
 @dataclass(frozen=True, slots=True)
 class Trade:
-    """A filled order at one trading day's opening price."""
+    """A filled order at the configured execution price."""
 
     date: pd.Timestamp
     symbol: str
@@ -81,7 +81,7 @@ class AccountSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class MarketHistory:
-    """Opening and closing prices strictly before the decision date."""
+    """Price history cut off at the engine's configured decision time."""
 
     open: pd.DataFrame
     close: pd.DataFrame

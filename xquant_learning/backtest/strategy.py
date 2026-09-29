@@ -20,4 +20,7 @@ class Strategy(ABC):
     def generate_orders(
         self, account: AccountView, market: MarketHistory, date: pd.Timestamp,
     ) -> Sequence[Order]:
-        """Return orders for ``date`` using only history before ``date``."""
+        """Return orders using supplied history (exclusive by default).
+
+        Engine's explicit same_close research mode includes the current bar.
+        """

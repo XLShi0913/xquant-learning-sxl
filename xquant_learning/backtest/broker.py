@@ -21,7 +21,12 @@ class SimBroker:
         start: str | pd.Timestamp,
         end: str | pd.Timestamp,
         candidates: Iterable[str],
+        *,
+        execution_price: str = "open",
     ) -> None:
+        if execution_price not in {"open", "close"}:
+            raise ValueError("execution_price must be open or close")
+        self.execution_price = execution_price
         self.start = pd.Timestamp(start)
         self.end = pd.Timestamp(end)
         if self.start > self.end:
@@ -44,6 +49,7 @@ class SimBroker:
         ).sort_index()
 
         complete = self._open_prices.notna().all(axis=1) & self._close_prices.notna().all(axis=1)
+        self.excluded_dates = self._open_prices.index[~complete].copy()
         self.trading_dates = pd.DatetimeIndex(self._open_prices.index[complete])
         if self.trading_dates.empty:
             raise ValueError("candidates have no common complete Open/Close trading dates")
@@ -87,13 +93,19 @@ class SimBroker:
         row = self._close_prices.loc[timestamp]
         return {symbol: float(row[symbol]) for symbol in self.candidates}
 
+    def history_through(self, date: str | pd.Timestamp) -> MarketHistory:
+        """Inclusive history for idealized same-close research, never future bars."""
+        dates = self.trading_dates[self.trading_dates <= pd.Timestamp(date)]
+        return MarketHistory(self._open_prices.loc[dates].copy(),
+                             self._close_prices.loc[dates].copy())
+
     def execute_orders(
         self,
         account: Account,
         orders: Sequence[Order],
         date: str | pd.Timestamp,
     ) -> list[OrderResult]:
-        """Execute orders sequentially at the day's opening prices."""
+        """Execute orders sequentially at the configured open or close price."""
         timestamp = pd.Timestamp(date)
         results = [self._execute_one(account, order, timestamp) for order in orders]
         self.order_history.extend(results)
@@ -109,7 +121,8 @@ class SimBroker:
         if date not in self.trading_dates:
             return OrderResult(date, order, "REJECTED", "date is not tradable")
 
-        price = float(self._open_prices.loc[date, order.symbol])
+        prices = self._open_prices if self.execution_price == "open" else self._close_prices
+        price = float(prices.loc[date, order.symbol])
         if order.side == "BUY":
             if order.shares * price > account.cash + 1e-12:
                 return OrderResult(date, order, "REJECTED", "insufficient cash")
