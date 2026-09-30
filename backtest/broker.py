@@ -1,4 +1,4 @@
-"""Historical price storage and opening-price order execution."""
+"""Observed-price execution, commissions and persistent conditional orders."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from .models import MarketHistory, Order, OrderResult, Trade
 
 
 class SimBroker:
-    """Load a candidate universe and simulate long-only trades at daily open."""
+    """Long-only broker matching orders at one configured daily price sample."""
 
     def __init__(
         self,
@@ -23,7 +23,13 @@ class SimBroker:
         candidates: Iterable[str],
         *,
         execution_price: str = "open",
+        commission_rate: float = 0.001,
+        minimum_commission: float = 5.0,
     ) -> None:
+        if any(not np.isfinite(x) or x < 0 for x in (commission_rate, minimum_commission)):
+            raise ValueError("commission parameters must be finite and nonnegative")
+        self.commission_rate = float(commission_rate)
+        self.minimum_commission = float(minimum_commission)
         if execution_price not in {"open", "close"}:
             raise ValueError("execution_price must be open or close")
         self.execution_price = execution_price
@@ -71,6 +77,29 @@ class SimBroker:
         """Clear executions while keeping downloaded price data."""
         self.trades: list[Trade] = []
         self.order_history: list[OrderResult] = []
+        self._pending = {}
+        self._next_order_id = 1
+        self._last_date = None
+        self._account = None
+
+    def estimate_commission(self, amount: float) -> float:
+        """Fee per fully filled order, on buys and sells, with no rounding."""
+        if not np.isfinite(amount) or amount < 0:
+            raise ValueError("amount must be finite and nonnegative")
+        return max(amount * self.commission_rate, self.minimum_commission) if amount else 0.0
+
+    @property
+    def pending_orders(self) -> tuple[OrderResult, ...]:
+        """Immutable latest-state snapshots; funds/shares are not reserved."""
+        return tuple(item[0] for item in self._pending.values())
+
+    def cancel_order(self, order_id: int) -> OrderResult:
+        if order_id not in self._pending:
+            raise KeyError(f"no pending order {order_id}")
+        previous, _ = self._pending.pop(order_id)
+        result = OrderResult(self._last_date, previous.order, "CANCELED", order_id=order_id)
+        self.order_history.append(result)
+        return result
 
     def history_before(self, date: str | pd.Timestamp, lookback: int | None = None) -> MarketHistory:
         """Return prices strictly before ``date`` so strategies cannot look ahead."""
@@ -105,38 +134,82 @@ class SimBroker:
         orders: Sequence[Order],
         date: str | pd.Timestamp,
     ) -> list[OrderResult]:
-        """Execute orders sequentially at the configured open or close price."""
+        """Match existing orders, then submit new orders at this price sample.
+
+        GTC orders use only the selected Open/Close sample, not intraday highs
+        or lows. Stop-limit activation is latched. Call with [] to advance.
+        Unfilled orders survive until filled, rejected, canceled, or reset.
+        """
         timestamp = pd.Timestamp(date)
-        results = [self._execute_one(account, order, timestamp) for order in orders]
-        self.order_history.extend(results)
+        orders = list(orders)
+        if any(not isinstance(order, Order) for order in orders):
+            raise TypeError("orders must contain Order objects")
+        if self._last_date is not None and timestamp < self._last_date:
+            raise ValueError("cannot move broker time backwards")
+        if self._account is not None and self._account is not account:
+            raise ValueError("reset broker before changing account")
+        self._account, self._last_date = account, timestamp
+        results = []
+        for order_id, (previous, evaluated) in list(self._pending.items()):
+            if evaluated == timestamp or timestamp not in self.trading_dates:
+                continue
+            result = self._match(account, previous.order, timestamp, order_id,
+                                 previous.status == "TRIGGERED")
+            self._save(result, timestamp)
+            results.append(result)
+        for order in orders:
+            order_id = self._next_order_id
+            self._next_order_id += 1
+            result = self._match(account, order, timestamp, order_id)
+            self._save(result, timestamp)
+            results.append(result)
         return results
 
-    def _execute_one(self, account: Account, order: Order, date: pd.Timestamp) -> OrderResult:
-        if not isinstance(order, Order):
-            raise TypeError("strategy must return Order objects")
+    def _save(self, result, date):
+        self.order_history.append(result)
+        if result.status in {"PENDING", "TRIGGERED"}:
+            self._pending[result.order_id] = (result, date)
+        else:
+            self._pending.pop(result.order_id, None)
+
+    def _match(self, account, order, date, order_id, triggered=False):
+        def outcome(status, reason=None, trade=None):
+            return OrderResult(date, order, status, reason, trade, order_id)
         if order.symbol not in self.candidates:
-            return OrderResult(date, order, "REJECTED", "symbol is outside candidate universe")
+            return outcome("REJECTED", "symbol is outside candidate universe")
         if order.symbol not in account.positions:
-            return OrderResult(date, order, "REJECTED", "symbol is outside account universe")
+            return outcome("REJECTED", "symbol is outside account universe")
         if date not in self.trading_dates:
-            return OrderResult(date, order, "REJECTED", "date is not tradable")
+            return outcome("REJECTED", "date is not tradable")
 
         prices = self._open_prices if self.execution_price == "open" else self._close_prices
         price = float(prices.loc[date, order.symbol])
+        if order.order_type in {"STOP", "STOP_LIMIT"} and not triggered:
+            triggered = price >= order.stop_price if order.side == "BUY" else price <= order.stop_price
+            if not triggered:
+                return outcome("PENDING")
+        if order.order_type in {"LIMIT", "STOP_LIMIT"}:
+            marketable = price <= order.limit_price if order.side == "BUY" else price >= order.limit_price
+            if not marketable:
+                return outcome("TRIGGERED" if triggered else "PENDING")
+        fee = self.estimate_commission(order.shares * price)
         if order.side == "BUY":
-            if order.shares * price > account.cash + 1e-12:
-                return OrderResult(date, order, "REJECTED", "insufficient cash")
+            if order.shares * price + fee > account.cash + 1e-12:
+                return outcome("REJECTED", "insufficient cash")
             account._buy(order.symbol, order.shares, price)
         else:
             if order.shares > account.positions[order.symbol]:
-                return OrderResult(date, order, "REJECTED", "insufficient shares")
+                return outcome("REJECTED", "insufficient shares")
+            if account.cash + order.shares * price < fee:
+                return outcome("REJECTED", "insufficient cash for sell commission")
             account._sell(order.symbol, order.shares, price)
 
+        account.cash -= fee
         if abs(account.cash) < 1e-12:
             account.cash = 0.0
-        trade = Trade(date, order.symbol, order.side, order.shares, price, account.cash)
+        trade = Trade(date, order.symbol, order.side, order.shares, price, account.cash, fee, order_id)
         self.trades.append(trade)
-        return OrderResult(date, order, "FILLED", trade=trade)
+        return outcome("FILLED", trade=trade)
 
     def _validated_bars(self, frame: pd.DataFrame, symbol: str) -> pd.DataFrame:
         if frame.empty:

@@ -2,8 +2,8 @@
 import unittest
 import numpy as np
 import pandas as pd
-from xquant_learning.backtest import Account, SimBroker, Engine, DataFrameDataSource
-from xquant_learning.backtest.allocation import PeriodicAllocationStrategy, allocation_weights
+from backtest import Account, SimBroker, Engine, DataFrameDataSource
+from backtest.allocation import PeriodicAllocationStrategy, allocation_weights
 
 
 class AllocationTests(unittest.TestCase):
@@ -25,7 +25,8 @@ class AllocationTests(unittest.TestCase):
             "B": pd.DataFrame({"Open": [1, 1, 1], "Close": [10, 10, 10]}, index=dates),
         }
         source = DataFrameDataSource(data)
-        broker = SimBroker(source, dates[0], dates[-1], ["A", "B"], execution_price="close")
+        broker = SimBroker(source, dates[0], dates[-1], ["A", "B"], execution_price="close",
+                           commission_rate=0, minimum_commission=0)
         engine = Engine(Account(105, ["A", "B"]), broker,
                         PeriodicAllocationStrategy("equal", ["A", "B"], interval=1),
                         signal_timing="same_close")

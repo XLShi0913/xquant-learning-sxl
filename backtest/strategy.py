@@ -16,6 +16,9 @@ class Strategy(ABC):
     def reset(self) -> None:
         """Reset optional strategy state before a new engine run."""
 
+    def configure_execution(self, broker) -> None:
+        """Optional fee-model binding before a run; existing strategies need no changes."""
+
     @abstractmethod
     def generate_orders(
         self, account: AccountView, market: MarketHistory, date: pd.Timestamp,

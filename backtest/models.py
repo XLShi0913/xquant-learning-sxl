@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from types import MappingProxyType
 from typing import Literal, Mapping, TypeVar
 
 import pandas as pd
 
 Side = Literal["BUY", "SELL"]
-OrderStatus = Literal["FILLED", "REJECTED"]
+OrderStatus = Literal["PENDING", "TRIGGERED", "FILLED", "REJECTED", "CANCELED"]
 ValueT = TypeVar("ValueT", int, float)
 
 
@@ -26,6 +27,10 @@ class Order:
     side: Side
     shares: int
 
+    order_type: Literal["MARKET", "LIMIT", "STOP", "STOP_LIMIT"] = "MARKET"
+    limit_price: float | None = None
+    stop_price: float | None = None
+
     def __post_init__(self) -> None:
         if not self.symbol:
             raise ValueError("order symbol cannot be empty")
@@ -35,6 +40,16 @@ class Order:
             raise TypeError("order shares must be an integer")
         if self.shares <= 0:
             raise ValueError("order shares must be positive")
+        if self.order_type not in {"MARKET", "LIMIT", "STOP", "STOP_LIMIT"}:
+            raise ValueError("unknown order_type")
+        for name, required in (("limit_price", self.order_type in {"LIMIT", "STOP_LIMIT"}),
+                               ("stop_price", self.order_type in {"STOP", "STOP_LIMIT"})):
+            value = getattr(self, name)
+            if required:
+                if value is None or isinstance(value, bool) or not math.isfinite(value) or value <= 0:
+                    raise ValueError(f"{name} must be finite and positive")
+            elif value is not None:
+                raise ValueError(f"{name} is not used by {self.order_type}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +62,8 @@ class Trade:
     shares: int
     price: float
     cash_after: float
+    commission: float = 0.0
+    order_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +75,7 @@ class OrderResult:
     status: OrderStatus
     reason: str | None = None
     trade: Trade | None = None
+    order_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

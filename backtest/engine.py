@@ -45,13 +45,15 @@ class Engine:
         self.account.reset()
         self.broker.reset()
         self.strategy.reset()
+        self.strategy.configure_execution(self.broker)
         self.daily_order_results = {}
 
         for date in self.broker.trading_dates:
+            pending_results = self.broker.execute_orders(self.account, [], date)
             market = (self.broker.history_through(date) if self.signal_timing == "same_close"
                       else self.broker.history_before(date))
             orders = list(self.strategy.generate_orders(self.account.view(), market, date))
-            self.daily_order_results[date] = self.broker.execute_orders(
+            self.daily_order_results[date] = pending_results + self.broker.execute_orders(
                 self.account, orders, date
             )
             self.account.record(date, self.broker.close_prices_at(date))

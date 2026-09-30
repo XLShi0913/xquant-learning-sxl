@@ -7,7 +7,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from xquant_learning.backtest import (
+from backtest import (
     Account, DataFrameDataSource, Engine, Order, SimBroker, Strategy,
 )
 
@@ -34,7 +34,8 @@ class BacktestTests(unittest.TestCase):
     def make_engine(self, frame: pd.DataFrame, initial_cash: float = 100.0):
         symbol = "TEST"
         source = DataFrameDataSource({symbol: frame})
-        broker = SimBroker(source, frame.index.min(), frame.index.max(), [symbol])
+        broker = SimBroker(source, frame.index.min(), frame.index.max(), [symbol],
+                           commission_rate=0, minimum_commission=0)
         account = Account(initial_cash, [symbol])
         strategy = BuyOneShare(symbol)
         return Engine(account, broker, strategy), strategy

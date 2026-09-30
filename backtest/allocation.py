@@ -71,6 +71,10 @@ class PeriodicAllocationStrategy(Strategy):
     def reset(self):
         self.bar_count = 0
         self.audit = []
+        self._fee = lambda amount: 0.0
+
+    def configure_execution(self, broker):
+        self._fee = broker.estimate_commission
 
     def generate_orders(self, account, market, date):
         if market.close.empty or market.close.index[-1] != date:
@@ -87,7 +91,23 @@ class PeriodicAllocationStrategy(Strategy):
         target = np.floor(equity * w[:-1] / prices).astype(int)
         delta = target - held
         orders = [Order(s, "SELL", int(-d)) for s, d in zip(self.symbols, delta) if d < 0]
-        orders += [Order(s, "BUY", int(d)) for s, d in zip(self.symbols, delta) if d > 0]
+        available = account.cash + sum(-int(d) * p - self._fee(-int(d) * p)
+                                       for d, p in zip(delta, prices) if d < 0)
+        # Full target quantities may exceed cash once commissions are included.
+        # Keep sell-first ordering, then cap each buy to an affordable integer.
+        for s, d, price in zip(self.symbols, delta, prices):
+            if d <= 0:
+                continue
+            low, high = 0, int(d)
+            while low < high:
+                mid = (low + high + 1) // 2
+                if mid * price + self._fee(mid * price) <= available + 1e-12:
+                    low = mid
+                else:
+                    high = mid - 1
+            if low:
+                orders.append(Order(s, "BUY", low))
+                available -= low * price + self._fee(low * price)
         self.audit.append({"date": date, "bar": number,
                            "signal_date": history.index[-1], "observations": len(history),
                            **dict(zip((*self.symbols, "CASH"), w))})
