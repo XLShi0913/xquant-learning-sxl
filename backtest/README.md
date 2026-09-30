@@ -19,8 +19,7 @@ if str(root) not in sys.path:
     sys.path.insert(0, str(root))
 ```
 
-`xquant_learning` 仅保留旧导入路径的兼容入口，无重复实现。
-新旧路径导出的类是同一个对象，可以混用。
+当前公共入口是 `backtest`；项目已移除旧的 `xquant_learning` 目录。
 
 旧调用仍有效：`Order("510300.SS", "BUY", 100)` 默认是市价单，
 `SimBroker(source, start, end, symbols)` 和 `Engine(...).run()` 无需改变参数。
@@ -159,3 +158,27 @@ broker.cancel_order(order_id)
 
 账户仍禁止裸卖/做空。买入止损是受支持的委托方向，不意味着已实现空头持仓。
 引擎继续每日记录扣费后净资产，既有收益/波动率/回撤/夏普自动包含费用影响。
+
+## 成交后保护单与 q4 实验
+
+`Strategy.after_execution(account, market, date, results)` 是可选钩子，默认返回
+空列表，已有策略不必修改。引擎完成当日旧挂单与常规订单处理后调用一次该钩子，
+将其返回的保护单按同一价格样本撮合，再记录收盘账户。不会递归调用钩子。
+这保证保护单数量依据实际成交后的持仓，而非预计买入股数。
+
+```python
+from backtest.risk_controls import ProtectedRiskParityStrategy
+
+strategy = ProtectedRiskParityStrategy(
+    symbols, period=20, interval=21, stop_loss=0.10, take_profit=0.20)
+```
+
+该策略复用 `PeriodicAllocationStrategy` 的风险平价、费用预算与整数股调仓。
+保护价格按单只资产当前持仓的加权平均买入价（不含手续费）：增持更新均价，
+部分减持不变，清仓重置。STOP 全仓卖单用于固定止损，LIMIT 全仓卖单用于固定止盈。
+调仓或持仓变化后撤旧保护单、按实际股数重挂。一边成交后，策略撤另一边，
+但这只是每日单价格样本下的互斥管理，不是券商原生、盘中原子的 OCO。
+
+保护退出后资金留现金，不按其余资产权重再分配；下一次计划调仓才可再入场，
+退出当天即使遇到调仓也不能重买同一标的。新保护单可在创建时立即满足条件。
+这些规则以及三步样本内夏普选优在 `q4/when-to-trade.ipynb` 中完整说明。

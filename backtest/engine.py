@@ -56,6 +56,13 @@ class Engine:
             self.daily_order_results[date] = pending_results + self.broker.execute_orders(
                 self.account, orders, date
             )
+            protection = list(self.strategy.after_execution(
+                self.account.view(), market, date, tuple(self.daily_order_results[date])
+            ))
+            if protection:
+                self.daily_order_results[date] += self.broker.execute_orders(
+                    self.account, protection, date
+                )
             self.account.record(date, self.broker.close_prices_at(date))
         return self.history_frame()
 

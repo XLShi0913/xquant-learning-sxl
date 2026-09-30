@@ -1,25 +1,33 @@
-"""The moved package and its legacy imports share class identities."""
+"""Public backtest exports and direct module imports share class identities."""
 
 import importlib
 import unittest
 
 import backtest
-import xquant_learning
 
 
 class ImportCompatibilityTests(unittest.TestCase):
     def test_public_exports_are_identical(self):
-        legacy = importlib.import_module("xquant_learning.backtest")
-        self.assertIs(legacy, backtest)
-        for name in backtest.__all__:
-            self.assertIs(getattr(legacy, name), getattr(backtest, name))
-            self.assertIs(getattr(xquant_learning, name), getattr(backtest, name))
+        origins = {
+            "account": ["Account"],
+            "broker": ["SimBroker"],
+            "data": ["DataFrameDataSource", "MarketDataSource"],
+            "engine": ["Engine"],
+            "models": ["AccountSnapshot", "AccountView", "MarketHistory", "Order", "OrderResult", "Trade"],
+            "strategy": ["Strategy"],
+        }
+        self.assertEqual(set(backtest.__all__), {n for names in origins.values() for n in names})
+        for module, names in origins.items():
+            imported = importlib.import_module(f"backtest.{module}")
+            for name in names:
+                self.assertIs(getattr(imported, name), getattr(backtest, name))
 
     def test_submodules_are_identical(self):
-        for name in ("account", "allocation", "broker", "data", "engine", "models", "strategy"):
+        for name in ("account", "allocation", "broker", "data", "engine", "models", "strategy", "risk_controls"):
+            imported = importlib.import_module(f"backtest.{name}")
             self.assertIs(
-                importlib.import_module(f"xquant_learning.backtest.{name}"),
-                importlib.import_module(f"backtest.{name}"),
+                getattr(backtest, name),
+                imported,
             )
 
 

@@ -7,7 +7,7 @@ from collections.abc import Sequence
 
 import pandas as pd
 
-from .models import AccountView, MarketHistory, Order
+from .models import AccountView, MarketHistory, Order, OrderResult
 
 
 class Strategy(ABC):
@@ -18,6 +18,18 @@ class Strategy(ABC):
 
     def configure_execution(self, broker) -> None:
         """Optional fee-model binding before a run; existing strategies need no changes."""
+
+    def after_execution(
+        self, account: AccountView, market: MarketHistory,
+        date: pd.Timestamp, results: Sequence[OrderResult],
+    ) -> Sequence[Order]:
+        """Optional one-pass hook for orders based on actual fills (e.g. protection).
+
+        Account is read-only. Implementations may cancel their own pending orders
+        through a bound broker. Returned orders are matched once at this sample;
+        the engine does not recursively invoke this hook.
+        """
+        return []
 
     @abstractmethod
     def generate_orders(
