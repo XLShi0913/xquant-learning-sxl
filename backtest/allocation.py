@@ -17,10 +17,24 @@ def validate_weights(weights, tolerance=1e-6):
     return w
 
 
-def allocation_weights(method, closes, period=20):
+def _indicator_windows(period, momentum_window, volatility_window):
+    """Resolve separate windows while keeping legacy period as both defaults."""
+    momentum = period if momentum_window is None else momentum_window
+    volatility = period if volatility_window is None else volatility_window
+    for name, value in (("period", period), ("momentum_window", momentum),
+                        ("volatility_window", volatility)):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 2:
+            raise ValueError(f"{name} must be an integer >= 2")
+    return momentum, volatility
+
+
+def allocation_weights(method, closes, period=20, *, momentum_window=None,
+                       volatility_window=None):
     """Equal, diagonal risk parity, or positive RAM score weights plus CASH.
 
-    Insufficient history (period+1 prices) means CASH for indicator strategies.
+    Legacy period sets both windows unless separately overridden. Risk parity
+    uses only volatility_window; RAM requires both windows plus one price.
+    Insufficient history means CASH for indicator strategies.
     Momentum is average log return; volatility is sample std of log returns.
     """
     n = closes.shape[1]
@@ -30,16 +44,20 @@ def allocation_weights(method, closes, period=20):
         return validate_weights(np.r_[np.full(n, 1 / n), 0.0])
     if method not in {"risk_parity", "ram"}:
         raise ValueError("unknown allocation method")
-    if len(closes) <= period:
+    momentum_window, volatility_window = _indicator_windows(
+        period, momentum_window, volatility_window)
+    required = volatility_window if method == "risk_parity" else max(momentum_window, volatility_window)
+    if len(closes) <= required:
         return validate_weights(np.r_[np.zeros(n), 1.0])
-    log_prices = np.log(closes.tail(period + 1))
-    sigma = log_prices.diff().iloc[1:].std(ddof=1).to_numpy()
+    volatility_prices = np.log(closes.tail(volatility_window + 1))
+    sigma = volatility_prices.diff().iloc[1:].std(ddof=1).to_numpy()
     valid = np.isfinite(sigma) & (sigma > 0)
     scores = np.zeros(n)
     if method == "risk_parity":
         scores[valid] = 1 / sigma[valid]
     else:
-        momentum = ((log_prices.iloc[-1] - log_prices.iloc[0]) / period).to_numpy()
+        momentum_prices = np.log(closes.tail(momentum_window + 1))
+        momentum = ((momentum_prices.iloc[-1] - momentum_prices.iloc[0]) / momentum_window).to_numpy()
         valid &= np.isfinite(momentum) & (momentum > 0)
         scores[valid] = momentum[valid] / sigma[valid]
     if scores.sum() == 0:
@@ -55,11 +73,12 @@ class PeriodicAllocationStrategy(Strategy):
     Sell orders precede buys. No share rounding is hidden by normalization.
     """
 
-    def __init__(self, method, symbols, period=20, interval=10):
+    def __init__(self, method, symbols, period=20, interval=10, *,
+                 momentum_window=None, volatility_window=None):
         if method not in {"equal", "risk_parity", "ram"}:
             raise ValueError("unknown allocation method")
-        if isinstance(period, bool) or not isinstance(period, int) or period < 2:
-            raise ValueError("period must be an integer >= 2")
+        self.momentum_window, self.volatility_window = _indicator_windows(
+            period, momentum_window, volatility_window)
         if isinstance(interval, bool) or not isinstance(interval, int) or interval < 1:
             raise ValueError("interval must be a positive integer")
         self.method, self.symbols = method, tuple(symbols)
@@ -84,7 +103,9 @@ class PeriodicAllocationStrategy(Strategy):
         if number % self.interval:
             return []
         history = market.close.loc[:, list(self.symbols)]
-        w = allocation_weights(self.method, history, self.period)
+        w = allocation_weights(self.method, history, self.period,
+                               momentum_window=self.momentum_window,
+                               volatility_window=self.volatility_window)
         prices = history.iloc[-1].to_numpy(dtype=float)
         held = np.array([account.positions[s] for s in self.symbols], dtype=int)
         equity = float(account.cash + held @ prices)
@@ -112,3 +133,20 @@ class PeriodicAllocationStrategy(Strategy):
                            "signal_date": history.index[-1], "observations": len(history),
                            **dict(zip((*self.symbols, "CASH"), w))})
         return orders
+
+
+class BuyAndHoldEqualWeightStrategy(PeriodicAllocationStrategy):
+    """Allocate equally once at the first close, then never rebalance or sell.
+
+    Reuse equal-allocation integer sizing and the broker's fee budget. Actual
+    initial weights can deviate slightly due to shares/fees; subsequent weights
+    drift with prices. Residual cash remains cash. Same-close engine required.
+    """
+
+    def __init__(self, symbols):
+        super().__init__("equal", symbols, period=20, interval=1)
+
+    def generate_orders(self, account, market, date):
+        if self.bar_count:
+            return []
+        return super().generate_orders(account, market, date)

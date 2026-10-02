@@ -182,3 +182,93 @@ strategy = ProtectedRiskParityStrategy(
 保护退出后资金留现金，不按其余资产权重再分配；下一次计划调仓才可再入场，
 退出当天即使遇到调仓也不能重买同一标的。新保护单可在创建时立即满足条件。
 这些规则以及三步样本内夏普选优在 `q4/when-to-trade.ipynb` 中完整说明。
+
+## 通用保护策略与绩效分析（q5）
+
+q4 的 `ProtectedRiskParityStrategy` 构造方式保持不变；保护逻辑现在由
+`ProtectedAllocationStrategy` 复用，可对等权、风险平价或 RAM 配置挂单：
+
+```python
+from backtest.risk_controls import ProtectedAllocationStrategy
+strategy = ProtectedAllocationStrategy("ram", symbols, period=20,
+                                       interval=10, stop_loss=0.05)
+```
+
+绩效函数位于 `backtest.performance`，输入扣费后的每日账户总资产，不再扣一次费用：
+
+```python
+from backtest.performance import performance_metrics, calendar_year_metrics
+total = performance_metrics(ledger.portfolio_value, initial_cash, mar_annual=0.0)
+annual = calendar_year_metrics(ledger.portfolio_value, initial_cash, mar_annual=0.0)
+```
+
+输出八项指标：期末净值、累计收益、日历时长 CAGR、252日年化波动、正值最大回撤、
+零无风险利率简化夏普、CAGR/最大回撤的卡玛、基于 MAR 下行偏差的年化索提诺。
+下行偏差使用全部日收益为分母：`sqrt(mean(min(r-MAR_daily, 0)**2))`，
+不是只取负收益再计算标准差；年化 MAR 先折算成日 MAR。零分母返回 NaN。
+
+年度切片不重启回测：期初资产取上一年最后的收盘总资产，首日收益与其比较；
+年度局部回撤从该期初资产重新计算峰值。完整中间年份按12月31日边界估值，
+非交易日沿用最近收盘价；首末区间按实际观测边界，并标记非完整年度。
+各年的收益因子相乘等于总区间的收益因子。完整年度也统一使用365.25日年长。
+`q5/how-to-validate.ipynb` 保存总指标、年度指标、费用与交易明细及四组可视化。
+
+q5 还包含 `backtest.allocation.BuyAndHoldEqualWeightStrategy(symbols)` 基准：
+首个共同交易日按收盘价初始等权买入，沿用整数股与手续费预算，此后不调仓、
+不卖出、不挂保护单，剩余现金不再投入。后续资产权重随价格漂移。
+回测末日按收盘价估值，不强制平仓，因而只发生初始买入手续费。
+
+### 月度分布与回撤事件
+
+```python
+from backtest.performance import (
+    calendar_month_returns, monthly_return_statistics, drawdown_events,
+)
+monthly = calendar_month_returns(ledger.portfolio_value, initial_cash)
+monthly_stats = monthly_return_statistics(monthly)
+events = drawdown_events(ledger.portfolio_value, initial_cash, threshold=-0.001)
+top5 = events.sort_values("depth").head(5)
+```
+
+自然月收益使用当月最后净资产除以上月最后净资产，首月分母为初始本金。
+首末不完整月保留、不外推；缺失整月会报错，不擅自填充。月收益因子连乘
+等于全程净值。零收益月计入总月数，但不算盈利或亏损并打断连续盈亏。
+盈亏比使用条件均值；Profit Factor 使用正月收益率之和除以负月收益率之和
+绝对值，是月收益分布指标，不是金额或交易级指标。无分母返回 NaN。
+
+`threshold=-0.001` 表示筛选深度达到 **-0.1%** 的回撤事件，恢复仍要求回到
+原来的峰值，不能只回到阈值上方。开始日期取最近前峰，触发日期另行保留；
+首次到达最深位置为最低点。深度为负值，升序排序得到最深事件。
+下跌和恢复天数分别为峰值至最低点、最低点至恢复日期的自然日间隔。
+未恢复事件的恢复日期为 NaT、恢复天数为 NaN，末次观测日期不能视作恢复。
+初始本金也参与峰值，若首日因费用已经回撤，则前峰标记在首个观测日期。
+q5 追加六个策略的月度统计、分布直方图/箱线图、前5事件表和水下曲线，
+所有计算复用同一份扣费后每日净资产，不重复扣费、不重新运行分月策略。
+
+### 独立指标窗口与 q5 敏感性扫描
+
+`allocation_weights`、`PeriodicAllocationStrategy`、`ProtectedAllocationStrategy`
+及兼容包装类 `ProtectedRiskParityStrategy` 支持两个可选关键字参数：
+`momentum_window` 和 `volatility_window`。不传时仍各自使用旧 `period`，
+因此已有 q3/q4/q5 调用无需修改，两个窗口均为20时逐日结果不变。
+
+```python
+strategy = ProtectedAllocationStrategy(
+    "ram", symbols, period=20, interval=10, stop_loss=0.05,
+    momentum_window=15, volatility_window=30,
+)
+```
+
+RAM 的分子用动量窗口内日均对数收益，分母用波动率窗口内日收益样本标准差，
+需要两个窗口中较大者加1个收盘价。风险平价只用波动率窗口，动量窗口既不
+影响权重，也不影响预热。预热期间持有现金，达到要求后的计划调仓日才入场。
+窗口必须为大于等于2的整数。下单、费用、保护单规则均未改变。
+
+q5 现在同步扫描RAM的两个窗口：`momentum_window = volatility_window = 扫描值`。
+风险平价只扫描波动率窗口。默认10/15/20/25/30/40六个值、四个策略，输出24条
+记录（4条基线复用，新增20次回测）。这是同值组合扫描，不是6×6完整联合网格，
+也不再分离两个窗口的独立影响；公共模块仍支持不同窗口供后续实验使用。
+有效参数相同的实验复用结果，不同参数创建独立账户/券商/策略。每个20日基线
+点都与原完整账户序列核对。另存首次买入日、费用和成交数，因为不同窗口的
+预热可推迟建仓；指标差异并不只来自后续权重。图中最大回撤为正数、越小越好。
+全区间扫描仅是样本内敏感性诊断，不能代替样本外/滚动验证或证明联合最优。

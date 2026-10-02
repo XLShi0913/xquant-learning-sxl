@@ -7,7 +7,7 @@ import pandas as pd
 
 from backtest import Account, DataFrameDataSource, Engine, SimBroker
 from backtest.allocation import PeriodicAllocationStrategy
-from backtest.risk_controls import ProtectedRiskParityStrategy
+from backtest.risk_controls import ProtectedAllocationStrategy, ProtectedRiskParityStrategy
 
 
 class RiskControlsTests(unittest.TestCase):
@@ -75,6 +75,45 @@ class RiskControlsTests(unittest.TestCase):
         for value in (0, -.1, 1, np.nan, True):
             with self.assertRaises(ValueError):
                 ProtectedRiskParityStrategy(["A"], stop_loss=value)
+
+    def test_separate_windows_keep_protection_and_legacy_wrapper(self):
+        kwargs = dict(momentum_window=3, volatility_window=2)
+        strategy = ProtectedAllocationStrategy("ram", ["A"], 2, 3, .05, **kwargs)
+        self.assertEqual((strategy.momentum_window, strategy.volatility_window), (3, 2))
+        legacy = ProtectedRiskParityStrategy(["A"], 2, 3, .05, **kwargs)
+        self.assertEqual((legacy.momentum_window, legacy.volatility_window), (3, 2))
+        dates = pd.bdate_range("2024-01-01", periods=10)
+        prices = [100, 101, 103, 105, 106, 104, 90, 100, 102, 104]
+        source = DataFrameDataSource({"A": pd.DataFrame({"Open": prices, "Close": prices}, index=dates)})
+        broker = SimBroker(source, dates[0], dates[-1], ["A"], execution_price="close")
+        engine = Engine(Account(10000, ["A"]), broker, strategy, signal_timing="same_close")
+        ledger = engine.run()
+        self.assertEqual(ledger.position_A.iloc[6], 0)
+        self.assertTrue(any(e.status == "FILLED" and e.order.order_type == "STOP"
+                            for e in broker.order_history))
+        pd.testing.assert_frame_equal(ledger, engine.run())
+
+    def test_ram_reuses_allocation_and_preserves_protection(self):
+        dates = pd.bdate_range("2024-01-01", periods=10)
+        prices = [100, 101, 103, 105, 106, 104, 90, 100, 102, 104]
+        frame = pd.DataFrame({"Open": prices, "Close": prices}, index=dates)
+        source = DataFrameDataSource({"A": frame})
+
+        def run(strategy):
+            broker = SimBroker(source, dates[0], dates[-1], ["A"], execution_price="close")
+            engine = Engine(Account(10000, ["A"]), broker, strategy, signal_timing="same_close")
+            ledger = engine.run()
+            self.assertFalse([r for r in broker.order_history if r.status == "REJECTED"])
+            return engine, ledger
+
+        _, unprotected = run(PeriodicAllocationStrategy("ram", ["A"], 2, 3))
+        _, no_stop = run(ProtectedAllocationStrategy("ram", ["A"], 2, 3))
+        pd.testing.assert_frame_equal(unprotected, no_stop)
+        engine, protected = run(ProtectedAllocationStrategy("ram", ["A"], 2, 3, stop_loss=.05))
+        self.assertEqual(protected.position_A.iloc[6], 0)
+        self.assertTrue(any(r.status == "FILLED" and r.order.order_type == "STOP"
+                            for r in engine.broker.order_history))
+        pd.testing.assert_frame_equal(protected, engine.run())
 
 
 if __name__ == "__main__":

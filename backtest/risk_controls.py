@@ -1,4 +1,4 @@
-"""Average-entry-price protection for periodic, same-close risk parity."""
+"""Average-entry-price protection for periodic, same-close allocations."""
 
 import math
 
@@ -6,7 +6,7 @@ from .allocation import PeriodicAllocationStrategy
 from .models import Order
 
 
-class ProtectedRiskParityStrategy(PeriodicAllocationStrategy):
+class ProtectedAllocationStrategy(PeriodicAllocationStrategy):
     """Fixed per-asset thresholds; re-entry only at subsequent rebalance dates.
 
     Average purchase price excludes commissions, which affect account equity.
@@ -17,7 +17,8 @@ class ProtectedRiskParityStrategy(PeriodicAllocationStrategy):
     daily-price simulation, not an intraday or atomic exchange OCO mechanism.
     """
 
-    def __init__(self, symbols, period=20, interval=10, stop_loss=None, take_profit=None):
+    def __init__(self, method, symbols, period=20, interval=10, stop_loss=None, take_profit=None, *,
+                 momentum_window=None, volatility_window=None):
         for name, value in (("stop_loss", stop_loss), ("take_profit", take_profit)):
             if value is not None and (
                 isinstance(value, bool) or not math.isfinite(value) or value <= 0
@@ -25,7 +26,8 @@ class ProtectedRiskParityStrategy(PeriodicAllocationStrategy):
             ):
                 raise ValueError(f"invalid {name}")
         self.stop_loss, self.take_profit = stop_loss, take_profit
-        super().__init__("risk_parity", symbols, period, interval)
+        super().__init__(method, symbols, period, interval,
+                         momentum_window=momentum_window, volatility_window=volatility_window)
 
     def reset(self):
         super().reset()
@@ -113,3 +115,12 @@ class ProtectedRiskParityStrategy(PeriodicAllocationStrategy):
                                     limit_price=basis * (1 + self.take_profit)))
         self._refresh = False
         return orders
+
+
+class ProtectedRiskParityStrategy(ProtectedAllocationStrategy):
+    """Backward-compatible q4 constructor for protected risk parity."""
+
+    def __init__(self, symbols, period=20, interval=10, stop_loss=None, take_profit=None, *,
+                 momentum_window=None, volatility_window=None):
+        super().__init__("risk_parity", symbols, period, interval, stop_loss, take_profit,
+                         momentum_window=momentum_window, volatility_window=volatility_window)
