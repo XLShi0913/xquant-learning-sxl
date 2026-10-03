@@ -59,3 +59,18 @@ research:
   comparison_stop_loss: 0.05
   train_end: '2024-01-31'
   validation_start: '2024-02-01'
+validation:
+  walk_forward:
+    train_period: 2Y
+    test_period: 6M
+    mode: rolling
+    step: null
+    gap_days: 0
+    include_partial: true
+  time_series_cv:
+    n_splits: 5
+    expanding: true
+    gap_days: 0
+  random_cv:
+    n_splits: 5
+    seed: 42

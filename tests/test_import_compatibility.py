@@ -16,6 +16,8 @@ class ImportCompatibilityTests(unittest.TestCase):
             "costs": ["TransactionCostModel", "SlippageModel", "FixedRateSlippage"],
             "alpaca": ["AlpacaDataSource", "AlpacaDataError"],
             "yahoo": ["YFinanceDataSource"],
+            "validation": ["DateSplit", "IndexSplit", "walk_forward_splits",
+                           "time_series_cv_splits", "random_cv_splits"],
             "research": ["BacktestResult", "run_backtest", "create_data_source", "scan_cases",
                          "scan_parameter", "scan_tied_windows", "scan_grid", "scan_metrics", "select_best"],
             "engine": ["Engine"],

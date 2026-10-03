@@ -6,13 +6,16 @@
 ## 架构
 
 ~~~text
-YAML ── market / strategy / broker / engine / analysis / data / research
+YAML ── market / strategy / broker / engine / analysis / data / research / validation
                    │
 MarketDataSource ── SimBroker（行情、挂单、成交） ── TransactionCostModel
                    ↑               │                     └─ SlippageModel
 Strategy ── Order ── Engine ── Account（现金、持仓、每日历史）
                      │
                      └─ BacktestResult ── performance / research
+
+validation ── 日期窗口 / 精确行号序列 ── 调用方选择训练与验证数据
+              （不持有引擎、账户或策略，不自动执行或选优）
 ~~~
 
 | 模块 | 职责 |
@@ -20,6 +23,7 @@ Strategy ── Order ── Engine ── Account（现金、持仓、每日历
 | account.py | 现金、整数持仓、只读账户视图、列表形式的每日快照 |
 | data.py | 数据接口、内存行情、课程CSV缓存、日期窗口与训练/验证分割 |
 | alpaca.py | 只读获取美国股票/ETF日线，不接入交易API |
+| yahoo.py | 雅虎日线适配器，优先读取兼容的本地CSV缓存 |
 | costs.py | 滑点成交价、佣金、卖出印花税、交易手数约束 |
 | broker.py | 对齐共同交易日、执行订单、保存挂单和成交历史 |
 | strategy.py | generate_orders(account, market, date) 接口 |
@@ -27,6 +31,7 @@ Strategy ── Order ── Engine ── Account（现金、持仓、每日历
 | engine.py | 先撮合历史挂单→策略下单→成交后保护单→日末估值 |
 | performance.py | 总体、自然年、月度、回撤事件统计 |
 | research.py | 独立运行工厂、参数扫描及选优 |
+| validation.py | 顶层数据划分：滚动/锚定前推、时间序列CV、随机K折 |
 | configuration.py | YAML读取、合法键校验、防御性配置快照 |
 
 ## Notebook 导入与最短用法
@@ -82,6 +87,7 @@ result = run_backtest(source, config=config, volatility_window=15, stop_loss=Non
 | analysis | MAR、回撤阈值、回撤排名数量 | 结果统计 |
 | data | 数据源、缓存目录、下载开关、Alpaca数据参数 | 行情获取 |
 | research | 扫描列表、训练/验证边界、实验对比止损值 | 实验设计 |
+| validation | 训练/验证周期、推进步长、间隔、折数、随机种子 | 仅验证实验设计，不属于策略或券商参数 |
 
 run_backtest 默认采用公共A股配置。直接使用低层 Account、SimBroker、Engine
 且不传 config 时，采用 backtest/config/legacy.yaml：一股单位、千分之一佣金、
@@ -313,6 +319,137 @@ display(validation.metrics)
 验证重新初始化账户与指标，不继承持仓或预热历史。
 只在训练集选参数，冻结后验证一次，不能依据验证结果再次挑参数。
 q4逐步选优、q5全区间敏感性图仍属样本内研究，不是样本外验证。
+
+## 多折验证数据划分
+
+`validation.py` 只决定数据如何划分；不下载行情、不调参、不撮合交易、
+不保存账户状态，也不自动拼接各折收益。算法与现有执行组件独立，
+仅复用公共配置读取。可以先检查序列，再自行组合参数扫描和回测。
+
+### 滚动式与锚定式前推
+
+~~~python
+from backtest import walk_forward_splits
+
+rolling = walk_forward_splits("2021-01-01", "2026-03-18",
+                              train_period="2Y", test_period="6M", mode="rolling")
+anchored = walk_forward_splits("2021-01-01", "2026-03-18",
+                               train_period="2Y", test_period="6M", mode="anchored")
+display(pd.DataFrame(f.to_dict() for f in rolling))
+~~~
+
+两者返回 `tuple[DateSplit, ...]`，每折有 `train_start`、`train_end`、
+`validation_start`、`validation_end`，均为含端点的 ISO 日期。
+默认第1折是训练 2021-01-01～2022-12-31、验证 2023-01-01～2023-06-30。
+第2折滚动训练改为 2021-07-01～2023-06-30；锚定训练仍从 2021-01-01 开始。
+本区间默认生成7折，最后验证段截断到 2026-03-18。
+
+- `train_period`、`test_period`、`step` 支持正整数加 `Y/M/D`，例如 `2Y/6M/126D`。
+  **D是自然日，不是交易日**；交易日由数据源和券商实际行情确定。
+- `step=None` 随验证周期推进；否则按指定步长移动。游标由最初起点加步长倍数计算，
+  月末偏移依照 pandas 的日历规则，并非固定天数。
+- `mode="rolling"` 移动训练起点；`"anchored"` 固定训练起点，逐步扩大训练集。
+- `gap_days` 在训练结束与验证开始之间留出自然日间隔，默认0。
+- `include_partial=True` 保留并截断最后的不完整验证窗口；False只保留完整窗口。
+  没有足够数据形成首个完整训练段及至少一天验证段时返回空元组。
+- 每折严格保证训练早于验证，但自定义步长可能让**不同折**的验证段重叠或留空档。
+  不要直接拼接重叠段净值，否则会重复计入同一日期。
+
+与已有时间分割、参数扫描的组合方式：
+
+~~~python
+from backtest import scan_tied_windows, select_best, run_backtest
+
+fold = rolling[0]
+parts = source.split(**fold.to_dict())
+runner = lambda **p: run_backtest(parts.train, config=config,
+    start=fold.train_start, end=fold.train_end, method="ram", **p)
+training = scan_tied_windows(runner, config.section("research")["windows"])
+best = select_best(training, "simplified_sharpe")
+out_of_sample = run_backtest(parts.validation, config=config,
+    start=fold.validation_start, end=fold.validation_end,
+    method="ram", momentum_window=best, volatility_window=best)
+~~~
+
+每折都在训练段独立选参数，然后冻结参数跑验证段；每次运行创建新账户。
+有日期窗口不保证其中有交易行情，应先检查短窗口、节假日和窗口预热长度。
+默认验证不读取训练段作指标预热、不继承持仓，保持现有公共模块语义。
+
+### 时间序列交叉验证
+
+~~~python
+from backtest import time_series_cv_splits
+
+folds = time_series_cv_splits("2021-01-01", "2026-03-18",
+                              n_splits=5, expanding=True, gap_days=0)
+display(pd.DataFrame(f.to_dict() for f in folds))
+~~~
+
+同样返回 `DateSplit`。将含结束日的自然日范围划为 `n_splits+1` 个近似等长块，
+逐折用下一块验证。`expanding=True` 用所有此前块训练；False只用紧邻的前一块。
+前一种对应同作者本地q6参考规范的 `TimeSeriesCV(n_splits=5, expanding=True)` 思路。
+各折严格先训练后验证；最后一块包含指定结束日。`gap_days` 删除验证块开始的若干天，
+如果留下空验证块则报错，不悄悄减少折数。末日和余数按本框架含端点约定分配，
+不承诺与其他SDK的日期舍入方式逐日一致。
+
+### 随机K折交叉验证
+
+~~~python
+from backtest import random_cv_splits
+
+# prices是按日期升序、无重复日期的实际观测表；多标的应先对齐共同日期。
+folds = random_cv_splits(prices.index, n_splits=5, seed=42)
+train, validation = folds[0].take(prices)
+print(folds[0].train_indices, folds[0].validation_indices)
+print(folds[0].is_chronological)
+~~~
+
+返回 `tuple[IndexSplit, ...]`，不返回单一的起止区间。
+局部随机数生成器将观测位置随机分成K组，每次留1组验证，其余组训练；
+每行恰好验证一次，同折训练/验证无交集，组大小最多差1行。
+组内按原日期顺序返回，不打乱价格序列。相同日期、参数和种子生成相同序列，
+也不改变全局随机数状态。
+
+`train_indices/validation_indices` 是原表的零基行号；
+`train_dates/validation_dates` 是精确日期；`take()` 返回独立副本，
+会拒绝日期错位、乱序或缺行的输入。所有划分记录不可变。
+
+**随机K折不是严格样本外时间验证**：训练集可能包含验证期之后的数据，
+相邻收益或重叠指标窗口也可能造成信息泄漏。不能取随机日期的min/max再调用
+`source.split()`，那会把未选日期重新混入；也不能把抽中的价格当成连续行情，
+直接计算RAM或拼接净值。这里不自动提供这种误导性的回测执行方式。
+随机K折适用于观测级模型/特征研究；评价交易策略未来表现优先用前推或时间序列CV。
+本实现是随机逐行K折，不是随机区块CV、purged CV或组合式CV。
+
+### 配置
+
+默认设置放在 `backtest/config/default.yaml` 的独立 `validation` 区域：
+
+~~~yaml
+validation:
+  walk_forward:
+    train_period: 2Y
+    test_period: 6M
+    mode: rolling
+    step: null
+    gap_days: 0
+    include_partial: true
+  time_series_cv:
+    n_splits: 5
+    expanding: true
+    gap_days: 0
+  random_cv:
+    n_splits: 5
+    seed: 42
+~~~
+
+三个函数均支持 `config=config`；显式方法参数覆盖YAML，日期范围仍由调用方提供。
+例如 `walk_forward_splits(m["start"], m["end"], config=config, mode="anchored")`。
+
+规则依据：[同作者前推规范](https://github.com/xingwudao/xquant-learning/blob/main/q6-avoid-overfitting/specs/spec-02-walk-forward.md)、
+[交叉验证规范](https://github.com/xingwudao/xquant-learning/blob/main/q6-avoid-overfitting/specs/spec-03-cross-validation.md)。
+[线上6.2/6.3章节](https://xquant.shop/courses/book/q6-avoid-overfitting)当前访问只显示购买前预览，
+未核实受限正文；时间顺序方法按本地参考规范实现，随机K折按本次明确需求单独提供。
 
 ## 指标与验证
 

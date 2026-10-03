@@ -12,6 +12,8 @@ from .models import AccountSnapshot, AccountView, MarketHistory, Order, OrderRes
 from .strategy import Strategy
 from .research import (BacktestResult, run_backtest, create_data_source, scan_cases,
                        scan_parameter, scan_tied_windows, scan_grid, scan_metrics, select_best)
+from .validation import (DateSplit, IndexSplit, walk_forward_splits,
+                         time_series_cv_splits, random_cv_splits)
 
 __all__ = [
     "Account", "AccountSnapshot", "AccountView", "DataFrameDataSource", "Engine",
@@ -22,4 +24,5 @@ __all__ = [
     "YFinanceDataSource",
     "BacktestResult", "run_backtest", "create_data_source", "scan_cases", "scan_parameter",
     "scan_tied_windows", "scan_grid", "scan_metrics", "select_best",
+    "DateSplit", "IndexSplit", "walk_forward_splits", "time_series_cv_splits", "random_cv_splits",
 ]
