@@ -1,0 +1,8 @@
+# 经济假设与市场区间继承公共默认配置；仅覆盖本实验特有参数。
+analysis:
+  mar_annual: 0.0
+  drawdown_threshold: -0.001
+  top_drawdown_events: 5
+research:
+  comparison_stop_loss: 0.05
+  windows: [10, 15, 20, 25, 30, 40]

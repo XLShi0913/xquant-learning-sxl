@@ -4,6 +4,7 @@ import math
 
 from .allocation import PeriodicAllocationStrategy
 from .models import Order
+from .configuration import UNSET, configured, resolve_config
 
 
 class ProtectedAllocationStrategy(PeriodicAllocationStrategy):
@@ -17,8 +18,11 @@ class ProtectedAllocationStrategy(PeriodicAllocationStrategy):
     daily-price simulation, not an intraday or atomic exchange OCO mechanism.
     """
 
-    def __init__(self, method, symbols, period=20, interval=10, stop_loss=None, take_profit=None, *,
-                 momentum_window=None, volatility_window=None):
+    def __init__(self, method=None, symbols=None, period=None, interval=None, stop_loss=UNSET, take_profit=UNSET, *,
+                 momentum_window=None, volatility_window=None, config=None):
+        settings = resolve_config(config, legacy=True).section("strategy")
+        stop_loss = configured(stop_loss, settings, "stop_loss")
+        take_profit = configured(take_profit, settings, "take_profit")
         for name, value in (("stop_loss", stop_loss), ("take_profit", take_profit)):
             if value is not None and (
                 isinstance(value, bool) or not math.isfinite(value) or value <= 0
@@ -27,7 +31,7 @@ class ProtectedAllocationStrategy(PeriodicAllocationStrategy):
                 raise ValueError(f"invalid {name}")
         self.stop_loss, self.take_profit = stop_loss, take_profit
         super().__init__(method, symbols, period, interval,
-                         momentum_window=momentum_window, volatility_window=volatility_window)
+                         momentum_window=momentum_window, volatility_window=volatility_window, config=config)
 
     def reset(self):
         super().reset()
@@ -71,6 +75,7 @@ class ProtectedAllocationStrategy(PeriodicAllocationStrategy):
                         "kind": "stop_loss" if event.order.order_type == "STOP" else "take_profit",
                         "shares": trade.shares, "price": trade.price,
                         "commission": trade.commission, "order_id": event.order_id,
+                        "stamp_tax": trade.stamp_tax, "slippage": trade.slippage,
                     })
             self._refresh = True
 
@@ -120,7 +125,7 @@ class ProtectedAllocationStrategy(PeriodicAllocationStrategy):
 class ProtectedRiskParityStrategy(ProtectedAllocationStrategy):
     """Backward-compatible q4 constructor for protected risk parity."""
 
-    def __init__(self, symbols, period=20, interval=10, stop_loss=None, take_profit=None, *,
-                 momentum_window=None, volatility_window=None):
+    def __init__(self, symbols=None, period=None, interval=None, stop_loss=UNSET, take_profit=UNSET, *,
+                 momentum_window=None, volatility_window=None, config=None):
         super().__init__("risk_parity", symbols, period, interval, stop_loss, take_profit,
-                         momentum_window=momentum_window, volatility_window=volatility_window)
+                         momentum_window=momentum_window, volatility_window=volatility_window, config=config)

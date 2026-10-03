@@ -64,6 +64,14 @@ class Trade:
     cash_after: float
     commission: float = 0.0
     order_id: int | None = None
+    stamp_tax: float = 0.0
+    slippage: float = 0.0
+    market_price: float | None = None
+
+    @property
+    def fees(self):
+        """Cash fees only: slippage is already included in price."""
+        return self.commission + self.stamp_tax
 
 
 @dataclass(frozen=True, slots=True)

@@ -5,6 +5,7 @@ import pandas as pd
 
 from .models import Order
 from .strategy import Strategy
+from .configuration import resolve_config
 
 
 def validate_weights(weights, tolerance=1e-6):
@@ -28,8 +29,8 @@ def _indicator_windows(period, momentum_window, volatility_window):
     return momentum, volatility
 
 
-def allocation_weights(method, closes, period=20, *, momentum_window=None,
-                       volatility_window=None):
+def allocation_weights(method, closes, period=None, *, momentum_window=None,
+                       volatility_window=None, config=None):
     """Equal, diagonal risk parity, or positive RAM score weights plus CASH.
 
     Legacy period sets both windows unless separately overridden. Risk parity
@@ -44,6 +45,11 @@ def allocation_weights(method, closes, period=20, *, momentum_window=None,
         return validate_weights(np.r_[np.full(n, 1 / n), 0.0])
     if method not in {"risk_parity", "ram"}:
         raise ValueError("unknown allocation method")
+    if period is None:
+        settings = resolve_config(config, legacy=True).section("strategy")
+        momentum_window = settings["momentum_window"] if momentum_window is None else momentum_window
+        volatility_window = settings["volatility_window"] if volatility_window is None else volatility_window
+        period = momentum_window
     momentum_window, volatility_window = _indicator_windows(
         period, momentum_window, volatility_window)
     required = volatility_window if method == "risk_parity" else max(momentum_window, volatility_window)
@@ -73,8 +79,16 @@ class PeriodicAllocationStrategy(Strategy):
     Sell orders precede buys. No share rounding is hidden by normalization.
     """
 
-    def __init__(self, method, symbols, period=20, interval=10, *,
-                 momentum_window=None, volatility_window=None):
+    def __init__(self, method=None, symbols=None, period=None, interval=None, *,
+                 momentum_window=None, volatility_window=None, config=None):
+        settings = resolve_config(config, legacy=True)
+        strategy_settings = settings.section("strategy")
+        method = strategy_settings["method"] if method is None else method
+        symbols = settings.section("market")["symbols"] if symbols is None else symbols
+        interval = strategy_settings["interval"] if interval is None else interval
+        momentum_window = (period if period is not None else strategy_settings["momentum_window"]) if momentum_window is None else momentum_window
+        volatility_window = (period if period is not None else strategy_settings["volatility_window"]) if volatility_window is None else volatility_window
+        period = momentum_window if period is None else period
         if method not in {"equal", "risk_parity", "ram"}:
             raise ValueError("unknown allocation method")
         self.momentum_window, self.volatility_window = _indicator_windows(
@@ -91,9 +105,13 @@ class PeriodicAllocationStrategy(Strategy):
         self.bar_count = 0
         self.audit = []
         self._fee = lambda amount: 0.0
+        self._quote = None
+        self._lot_size = None
 
     def configure_execution(self, broker):
         self._fee = broker.estimate_commission
+        self._quote = broker.quote_order
+        self._lot_size = broker.lot_size
 
     def generate_orders(self, account, market, date):
         if market.close.empty or market.close.index[-1] != date:
@@ -109,26 +127,31 @@ class PeriodicAllocationStrategy(Strategy):
         prices = history.iloc[-1].to_numpy(dtype=float)
         held = np.array([account.positions[s] for s in self.symbols], dtype=int)
         equity = float(account.cash + held @ prices)
-        target = np.floor(equity * w[:-1] / prices).astype(int)
+        if self._quote is None:
+            raise RuntimeError("bind broker through configure_execution before generating orders")
+        lot = self._lot_size
+        target = np.floor(equity * w[:-1] / prices / lot).astype(int) * lot
         delta = target - held
         orders = [Order(s, "SELL", int(-d)) for s, d in zip(self.symbols, delta) if d < 0]
-        available = account.cash + sum(-int(d) * p - self._fee(-int(d) * p)
-                                       for d, p in zip(delta, prices) if d < 0)
+        available = account.cash + sum(
+            self._quote(s, "SELL", int(-d), p, date=date).cash_delta
+            for s, d, p in zip(self.symbols, delta, prices) if d < 0)
         # Full target quantities may exceed cash once commissions are included.
         # Keep sell-first ordering, then cap each buy to an affordable integer.
         for s, d, price in zip(self.symbols, delta, prices):
             if d <= 0:
                 continue
-            low, high = 0, int(d)
+            low, high = 0, int(d) // lot
             while low < high:
                 mid = (low + high + 1) // 2
-                if mid * price + self._fee(mid * price) <= available + 1e-12:
+                if -self._quote(s, "BUY", mid * lot, price, date=date).cash_delta <= available + 1e-12:
                     low = mid
                 else:
                     high = mid - 1
             if low:
-                orders.append(Order(s, "BUY", low))
-                available -= low * price + self._fee(low * price)
+                quantity = low * lot
+                orders.append(Order(s, "BUY", quantity))
+                available += self._quote(s, "BUY", quantity, price, date=date).cash_delta
         self.audit.append({"date": date, "bar": number,
                            "signal_date": history.index[-1], "observations": len(history),
                            **dict(zip((*self.symbols, "CASH"), w))})
@@ -143,8 +166,8 @@ class BuyAndHoldEqualWeightStrategy(PeriodicAllocationStrategy):
     drift with prices. Residual cash remains cash. Same-close engine required.
     """
 
-    def __init__(self, symbols):
-        super().__init__("equal", symbols, period=20, interval=1)
+    def __init__(self, symbols=None, *, config=None):
+        super().__init__("equal", symbols, interval=1, config=config)
 
     def generate_orders(self, account, market, date):
         if self.bar_count:

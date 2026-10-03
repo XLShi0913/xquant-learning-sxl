@@ -1,0 +1,61 @@
+market:
+  start: '2021-01-01'
+  end: '2026-03-18'
+  symbols: [510300.SS, 513100.SS, 518880.SS]
+  names: [沪深300, 纳指100, 黄金]
+strategy:
+  method: risk_parity
+  momentum_window: 20
+  volatility_window: 20
+  interval: 10
+  stop_loss: null
+  take_profit: null
+broker:
+  initial_cash: 100000.0
+  execution_price: close
+  lot_size: 100
+  commission_rate: 0.0002
+  minimum_commission: 5.0
+  stamp_tax_rate: 0.0005
+  slippage_rate: 0.001
+  instrument_types:
+    510300.SS: etf
+    513100.SS: etf
+    518880.SS: etf
+engine:
+  annual_trading_days: 252
+  signal_timing: same_close
+analysis:
+  mar_annual: 0.0
+  drawdown_threshold: -0.001
+  top_drawdown_events: 5
+data:
+  provider: cache
+  cache_dirs: [q3/data, q4/data, q5/data, data/yfinance]
+  download_if_missing: false
+  yfinance:
+    auto_adjust: true
+    cache_dir: data/yfinance
+    timeout: 30
+    threads: false
+    progress: false
+  alpaca:
+    endpoint: https://paper-api.alpaca.markets/v2
+    data_endpoint: https://data.alpaca.markets/v2
+    credentials_file: backtest/config/alpaca.local.yaml
+    key_env: APCA_API_KEY_ID
+    secret_env: APCA_API_SECRET_KEY
+    feed: iex
+    adjustment: all
+    timeout: 30
+    cache_dir: data/alpaca
+    page_limit: 10000
+    max_pages: 1000
+research:
+  intervals: [5, 10, 21, 63]
+  stop_losses: [null, 0.05, 0.10, 0.15]
+  take_profits: [null, 0.10, 0.20, 0.30]
+  windows: [10, 15, 20, 25, 30, 40]
+  comparison_stop_loss: 0.05
+  train_end: '2024-01-31'
+  validation_start: '2024-02-01'

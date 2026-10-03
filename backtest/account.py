@@ -8,12 +8,18 @@ import numpy as np
 import pandas as pd
 
 from .models import AccountSnapshot, AccountView, readonly_mapping
+from .configuration import resolve_config
 
 
 class Account:
     """A long-only cash account with an end-of-day snapshot list."""
 
-    def __init__(self, initial_cash: float, symbols: Iterable[str]) -> None:
+    def __init__(self, initial_cash: float | None = None, symbols: Iterable[str] | None = None, *, config=None) -> None:
+        settings = resolve_config(config, legacy=True)
+        if initial_cash is None:
+            initial_cash = settings.section("broker")["initial_cash"]
+        if symbols is None:
+            symbols = settings.section("market")["symbols"]
         initial_cash = float(initial_cash)
         if not np.isfinite(initial_cash) or initial_cash <= 0:
             raise ValueError("initial_cash must be finite and positive")

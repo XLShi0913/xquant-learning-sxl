@@ -11,6 +11,7 @@ from .account import Account
 from .broker import SimBroker
 from .models import OrderResult
 from .strategy import Strategy
+from .configuration import resolve_config
 
 
 @dataclass(slots=True)
@@ -20,13 +21,19 @@ class Engine:
     account: Account
     broker: SimBroker
     strategy: Strategy
-    annual_trading_days: int = 252
-    signal_timing: str = "previous_close"
+    annual_trading_days: int | None = None
+    signal_timing: str | None = None
+    config: object = None
     daily_order_results: dict[pd.Timestamp, list[OrderResult]] = field(
         init=False, default_factory=dict
     )
 
     def __post_init__(self) -> None:
+        settings = resolve_config(self.config, legacy=True).section("engine")
+        if self.annual_trading_days is None:
+            self.annual_trading_days = settings["annual_trading_days"]
+        if self.signal_timing is None:
+            self.signal_timing = settings["signal_timing"]
         if self.signal_timing not in {"previous_close", "same_close"}:
             raise ValueError("signal_timing must be previous_close or same_close")
         if self.signal_timing == "same_close" and self.broker.execution_price != "close":

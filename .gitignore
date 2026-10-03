@@ -8,3 +8,8 @@ q3/data/
 q3/figures/
 q4/results
 q5/results
+data/alpaca/
+data/yfinance/
+q4/data/
+q5/data/
+backtest/config/*.local.yaml

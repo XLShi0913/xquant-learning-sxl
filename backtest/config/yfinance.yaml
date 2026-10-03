@@ -1,0 +1,11 @@
+# 雅虎日线：优先使用既有缓存，缓存缺失时允许下载。
+# 不改变 market 的 A 股标的和日期，也不隐式切换到 Alpaca。
+data:
+  provider: yfinance
+  download_if_missing: true
+  yfinance:
+    auto_adjust: true
+    cache_dir: data/yfinance
+    timeout: 30
+    threads: false
+    progress: false

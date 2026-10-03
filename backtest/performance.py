@@ -7,6 +7,7 @@ deviation of the negative-return subset. Zero denominators produce NaN.
 
 import numpy as np
 import pandas as pd
+from .configuration import UNSET, load_config
 
 
 METRIC_COLUMNS = [
@@ -44,8 +45,8 @@ def equity_drawdown(equity, initial_value):
     return (values / peak - 1).rename("drawdown")
 
 
-def performance_metrics(equity, initial_value, *, annual_trading_days=252,
-                        mar_annual=0.0, period_start=None, period_end=None):
+def performance_metrics(equity, initial_value, *, annual_trading_days=None,
+                        mar_annual=UNSET, period_start=None, period_end=None, config=None):
     """Eight metrics from after-cost equity, with optional calendar boundaries.
 
     period_start/end describe the time between opening and closing valuations.
@@ -53,6 +54,10 @@ def performance_metrics(equity, initial_value, *, annual_trading_days=252,
     nav is closing / opening equity (for yearly slices, each opening NAV is 1).
     The first daily return includes any opening-day fee or price change.
     """
+    if annual_trading_days is None or mar_annual is UNSET:
+        settings = load_config(config)
+        annual_trading_days = settings.section("engine")["annual_trading_days"] if annual_trading_days is None else annual_trading_days
+        mar_annual = settings.section("analysis")["mar_annual"] if mar_annual is UNSET else mar_annual
     values = _validated_equity(equity, initial_value)
     if isinstance(annual_trading_days, bool) or not isinstance(annual_trading_days, int) or annual_trading_days <= 0:
         raise ValueError("annual_trading_days must be a positive integer")
@@ -80,8 +85,8 @@ def performance_metrics(equity, initial_value, *, annual_trading_days=252,
     ])), dtype=float)
 
 
-def calendar_year_metrics(equity, initial_value, *, annual_trading_days=252,
-                          mar_annual=0.0):
+def calendar_year_metrics(equity, initial_value, *, annual_trading_days=None,
+                          mar_annual=UNSET, config=None):
     """Slice one continuous run without resetting positions, signals or orders.
 
     Each year starts with the previous year's last equity (or original capital).
@@ -89,6 +94,10 @@ def calendar_year_metrics(equity, initial_value, *, annual_trading_days=252,
     calendar year boundaries; the first/last year use actual observation edges.
     For leap years, CAGR still uses the same 365.25-day basis as total metrics.
     """
+    if annual_trading_days is None or mar_annual is UNSET:
+        settings = load_config(config)
+        annual_trading_days = settings.section("engine")["annual_trading_days"] if annual_trading_days is None else annual_trading_days
+        mar_annual = settings.section("analysis")["mar_annual"] if mar_annual is UNSET else mar_annual
     values = _validated_equity(equity, initial_value)
     rows = []
     for year in values.index.year.unique():
@@ -167,7 +176,7 @@ def monthly_return_statistics(returns):
     })
 
 
-def drawdown_events(equity, initial_value, *, threshold=-0.001):
+def drawdown_events(equity, initial_value, *, threshold=None, config=None):
     """Peak-to-recovery episodes whose depth reaches the negative threshold.
 
     Start is the last high-water mark, not the threshold-crossing day. An event
@@ -176,6 +185,7 @@ def drawdown_events(equity, initial_value, *, threshold=-0.001):
     or duration; last_observed_date is NOT a fabricated recovery. Opening capital
     is a peak dated at the first observation if its valuation is already lower.
     """
+    threshold = load_config(config).section("analysis")["drawdown_threshold"] if threshold is None else threshold
     values = _validated_equity(equity, initial_value)
     if not np.isfinite(threshold) or not -1 < threshold < 0:
         raise ValueError("threshold must be finite and between -1 and 0")

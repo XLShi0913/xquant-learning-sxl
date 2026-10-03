@@ -1,0 +1,7 @@
+# 未列出的值继承 backtest/config/default.yaml；方法参数优先于此配置。
+strategy:
+  method: risk_parity
+research:
+  intervals: [5, 10, 21, 63]
+  stop_losses: [null, 0.05, 0.10, 0.15]
+  take_profits: [null, 0.10, 0.20, 0.30]

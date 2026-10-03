@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 
 from .account import Account
+from .configuration import resolve_config
+from .costs import TransactionCostModel
 from .data import MarketDataSource
 from .models import MarketHistory, Order, OrderResult, Trade
 
@@ -22,14 +24,25 @@ class SimBroker:
         end: str | pd.Timestamp,
         candidates: Iterable[str],
         *,
-        execution_price: str = "open",
-        commission_rate: float = 0.001,
-        minimum_commission: float = 5.0,
+        execution_price: str | None = None,
+        commission_rate: float | None = None,
+        minimum_commission: float | None = None,
+        lot_size: int | None = None,
+        stamp_tax_rate: float | None = None,
+        slippage_rate: float | None = None,
+        instrument_types=None,
+        slippage_model=None,
+        config=None,
     ) -> None:
-        if any(not np.isfinite(x) or x < 0 for x in (commission_rate, minimum_commission)):
-            raise ValueError("commission parameters must be finite and nonnegative")
-        self.commission_rate = float(commission_rate)
-        self.minimum_commission = float(minimum_commission)
+        settings = resolve_config(config, legacy=True)
+        self.cost_model = TransactionCostModel(config=settings,
+            commission_rate=commission_rate, minimum_commission=minimum_commission,
+            lot_size=lot_size, stamp_tax_rate=stamp_tax_rate, slippage_rate=slippage_rate,
+            instrument_types=instrument_types, slippage_model=slippage_model)
+        self.commission_rate = self.cost_model.commission_rate
+        self.minimum_commission = self.cost_model.minimum_commission
+        self.lot_size = self.cost_model.lot_size
+        execution_price = settings.section("broker")["execution_price"] if execution_price is None else execution_price
         if execution_price not in {"open", "close"}:
             raise ValueError("execution_price must be open or close")
         self.execution_price = execution_price
@@ -84,9 +97,12 @@ class SimBroker:
 
     def estimate_commission(self, amount: float) -> float:
         """Fee per fully filled order, on buys and sells, with no rounding."""
-        if not np.isfinite(amount) or amount < 0:
-            raise ValueError("amount must be finite and nonnegative")
-        return max(amount * self.commission_rate, self.minimum_commission) if amount else 0.0
+        return self.cost_model.commission(amount)
+
+    def quote_order(self, symbol, side, shares, market_price, *, date=None, limit_price=None):
+        """Use the exact same model for allocation budgets and actual fills."""
+        return self.cost_model.quote(symbol, side, shares, market_price,
+                                     date=date, limit_price=limit_price)
 
     @property
     def pending_orders(self) -> tuple[OrderResult, ...]:
@@ -181,6 +197,8 @@ class SimBroker:
             return outcome("REJECTED", "symbol is outside account universe")
         if date not in self.trading_dates:
             return outcome("REJECTED", "date is not tradable")
+        if order.shares % self.lot_size:
+            return outcome("REJECTED", f"shares must be a multiple of lot_size={self.lot_size}")
 
         prices = self._open_prices if self.execution_price == "open" else self._close_prices
         price = float(prices.loc[date, order.symbol])
@@ -192,7 +210,9 @@ class SimBroker:
             marketable = price <= order.limit_price if order.side == "BUY" else price >= order.limit_price
             if not marketable:
                 return outcome("TRIGGERED" if triggered else "PENDING")
-        fee = self.estimate_commission(order.shares * price)
+        quote = self.quote_order(order.symbol, order.side, order.shares, price, date=date,
+            limit_price=order.limit_price if order.order_type in {"LIMIT", "STOP_LIMIT"} else None)
+        price, fee = quote.price, quote.fees
         if order.side == "BUY":
             if order.shares * price + fee > account.cash + 1e-12:
                 return outcome("REJECTED", "insufficient cash")
@@ -201,13 +221,14 @@ class SimBroker:
             if order.shares > account.positions[order.symbol]:
                 return outcome("REJECTED", "insufficient shares")
             if account.cash + order.shares * price < fee:
-                return outcome("REJECTED", "insufficient cash for sell commission")
+                return outcome("REJECTED", "insufficient cash for sell fees")
             account._sell(order.symbol, order.shares, price)
 
         account.cash -= fee
         if abs(account.cash) < 1e-12:
             account.cash = 0.0
-        trade = Trade(date, order.symbol, order.side, order.shares, price, account.cash, fee, order_id)
+        trade = Trade(date, order.symbol, order.side, order.shares, price, account.cash,
+                      quote.commission, order_id, quote.stamp_tax, quote.slippage, quote.market_price)
         self.trades.append(trade)
         return outcome("FILLED", trade=trade)
 

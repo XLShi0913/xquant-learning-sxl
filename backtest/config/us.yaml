@@ -1,0 +1,12 @@
+market:
+  symbols: [SPY, QQQ, GLD]
+  names: [美国股票, 纳指100, 黄金]
+broker:
+  lot_size: 1
+  stamp_tax_rate: 0.0
+  instrument_types:
+    SPY: etf
+    QQQ: etf
+    GLD: etf
+data:
+  provider: alpaca
